@@ -1,0 +1,7 @@
+/data/
+/models/
+/runtime/
+/*.db
+/*.db-shm
+/*.db-wal
+/bin/
