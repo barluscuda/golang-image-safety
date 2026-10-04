@@ -49,6 +49,8 @@ func preprocess(ctx context.Context, src io.Reader, maxBytes int64) ([]float32, 
 		}
 	}
 	resized := image.NewRGBA(image.Rect(0, 0, imageSize, imageSize))
+	// Map the entire source rectangle to the entire model input. Scale width
+	// and height independently, including for portrait and landscape images.
 	draw.BiLinear.Scale(resized, resized.Bounds(), opaque, bounds, draw.Src, nil)
 	plane := imageSize * imageSize
 	pixels := make([]float32, 3*plane)

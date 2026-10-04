@@ -29,14 +29,50 @@ function workspace(fetchImage, records = [cached]) {
     document: { getElementById: element },
     localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
     window: { location: { protocol: 'http:', origin }, setInterval() {} },
-    fetch: async (url) => {
+    fetch: async (url, options) => {
       calls.push(url);
-      return url.endsWith('/health/ready') ? response({ status: 'ready' }) : fetchImage(url);
+      return url.endsWith('/health/ready') ? response({ status: 'ready' }) : fetchImage(url, options);
     },
-    setTimeout() {}, URL, console,
+    setTimeout() {}, URL, FormData, console,
   });
   return { element, calls, storage };
 }
+
+test('portrait, landscape, and square uploads preserve every original byte', async () => {
+  // Actual PNGs with dimensions 2x4, 4x2, and 2x2, respectively.
+  const fixtures = {
+    portrait: 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAAECAIAAAArjXluAAAAFUlEQVR4nGNkYEixYWBgYbBhYECnABi0AWJProreAAAAAElFTkSuQmCC',
+    landscape: 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAFklEQVR4nGNkYEixYWCAIBYGGwY4AAAZVAFaWIY0+QAAAABJRU5ErkJggg==',
+    square: 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGNkYEixYWBgYbBhYGBgAAAICADiUsDhGAAAAABJRU5ErkJggg==',
+  };
+  for (const [name, encoded] of Object.entries(fixtures)) {
+    const original = Buffer.from(encoded, 'base64');
+    const file = new File([original], name + '.png', { type: 'image/png' });
+    const uploads = [];
+    const app = workspace((url, options) => {
+      if (options?.method === 'POST') {
+        assert.equal(url, origin + '/v1/images');
+        uploads.push(options.body);
+        return response({ image_id: 'image-1', status: 'queued' }, 202);
+      }
+      return response(decision());
+    }, []);
+    app.element('file-input').files = [file];
+    app.element('file-input').events.change();
+    assert.equal(app.element('submit-button').disabled, false);
+    await app.element('submit-button').events.click();
+    await flush();
+    assert.equal(uploads.length, 1, name + ' must be uploaded');
+    assert.ok(uploads[0] instanceof FormData);
+    assert.deepEqual(Array.from(uploads[0].keys()), ['image']);
+    const uploaded = uploads[0].get('image');
+    assert.equal(uploaded.name, file.name);
+    assert.equal(uploaded.type, file.type);
+    assert.equal(uploaded.size, file.size);
+    assert.deepEqual(Buffer.from(await uploaded.arrayBuffer()), original, name + ' image was changed');
+    assert.equal(Number(app.element('stat-allowed').textContent), 1);
+  }
+});
 
 test('cached approval waits for a fresh API result', async () => {
   let resolveImage;

@@ -7,12 +7,79 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"os"
 	"testing"
 	"time"
 
+	"github.com/barluscuda/golang-image-safety/internal/adapter/storage"
 	"github.com/barluscuda/golang-image-safety/internal/domain"
 )
+
+func TestNativeClassifierAspectRatios(t *testing.T) {
+	model, runtime := os.Getenv("ONNX_TEST_MODEL"), os.Getenv("ONNX_TEST_RUNTIME")
+	if model == "" || runtime == "" {
+		t.Skip("set ONNX_TEST_MODEL and ONNX_TEST_RUNTIME to test real inference")
+	}
+	c, err := New(Config{ModelPath: model, RuntimeLibrary: runtime, Timeout: 10 * time.Second, MaxImageBytes: 1 << 20, Threads: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := c.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	files, err := storage.NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, _, err := (domain.Policy{NSFWThreshold: 0.5, NSFLThreshold: 0.5}).Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, format := range []string{"png", "jpeg"} {
+		for _, size := range []struct {
+			name          string
+			width, height int
+		}{
+			{"square", 448, 448},
+			{"portrait", 448, 896},
+			{"landscape", 896, 448},
+		} {
+			t.Run(format+"_"+size.name, func(t *testing.T) {
+				ctx := context.Background()
+				data := gridImage(t, size.width, size.height, format)
+				stored, err := files.Store(ctx, format+"_"+size.name, bytes.NewReader(data), c.cfg.MaxImageBytes)
+				if err != nil {
+					t.Fatal(err)
+				}
+				file, err := files.Open(ctx, stored.StorageKey)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer file.Close()
+				original, err := io.ReadAll(file)
+				if err != nil || !bytes.Equal(original, data) {
+					t.Fatalf("storage changed original image: %v", err)
+				}
+				result, err := c.Moderate(ctx, bytes.NewReader(original), stored.ContentType, policy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// Inspect the actual reused tensor bound to the native session.
+				tolerance := 0.0
+				if format == "jpeg" {
+					tolerance = 2
+				}
+				assertEntireImageTensor(t, c.input.GetData(), tolerance)
+				if result.Model != ModelName || result.Class == "" || result.Confidence <= 0 {
+					t.Fatalf("invalid result: %+v", result)
+				}
+			})
+		}
+	}
+}
 
 // Opt in so ordinary tests do not require native runtime or model downloads.
 func TestNativeClassifier(t *testing.T) {
